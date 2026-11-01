@@ -1,110 +1,147 @@
 import streamlit as st
 from PIL import Image
-import os
-import random
+import numpy as np
+from ultralytics import YOLO
 
-# Tự động kiểm tra thư viện YOLOv8
-try:
-    from ultralytics import YOLO
-    YOLO_AVAILABLE = True
-except ImportError:
-    YOLO_AVAILABLE = False
-
-# --- 1. CẤU HÌNH GIAO DIỆN ---
+# Cấu hình giao diện trang web
 st.set_page_config(
-    page_title="Food Scanner & Calo Optimization",
-    layout="centered"
+    page_title="Hệ Thống Phân Loại & Ước Tính Calo Thực Phẩm", 
+    page_icon="🥗", 
+    layout="wide"
 )
 
-st.title("🥗 Quét Thực Phẩm & Tối Ưu Chi Phí")
-st.write("Chụp ảnh hoặc tải lên nguyên liệu nấu ăn để AI nhận diện, tra cứu giá siêu thị và tối ưu thực đơn tự động.")
+st.title("🥗 Ứng Dụng AI Nhận Diện & Phân Loại Nguyên Liệu Thức Ăn")
+st.markdown("Hệ thống thông minh giúp phân nhóm nguyên liệu (Thịt, Cá, Rau, Quả, Trứng) và ước tính dinh dưỡng tự động.")
 
-# --- 2. TẢI MÔ HÌNH AI AN TOÀN ---
+# Thanh sidebar cấu hình nâng cao
+st.sidebar.header("⚙️ Tùy Chỉnh AI")
+confidence_threshold = st.sidebar.slider(
+    "Độ tự tin tối thiểu (Confidence)", 
+    min_value=0.1, max_value=0.9, value=0.5, step=0.05,
+    help="Tăng mức này lên nếu mô hình hay nhận diện nhầm lẫn (ví dụ: cá thành thịt bò)."
+)
+
+# Tải mô hình YOLOv8
 @st.cache_resource
 def load_model():
-    if not YOLO_AVAILABLE:
-        return None
-    model_path = "best.pt"
-    if os.path.exists(model_path):
-        try:
-            return YOLO(model_path)
-        except Exception:
-            return None
-    return None
+    model = YOLO("best.pt")
+    return model
 
-model = load_model()
+try:
+    model = load_model()
+except Exception as e:
+    st.error(f"❌ Lỗi khi tải mô hình 'best.pt': {e}. Hãy đảm bảo file mô hình nằm cùng thư mục với `app.py` trên GitHub!")
 
-# --- 3. GIAO DIỆN TẢI/CHỤP ẢNH (TƯƠNG THÍCH MỌI THIẾT BỊ) ---
-uploaded_file = st.file_uploader(
-    "📸 Chọn hoặc chụp ảnh thực phẩm (Rau, thịt, củ quả...):", 
-    type=["jpg", "jpeg", "png"]
-)
+# Phân loại nguyên liệu vào các nhóm cụ thể kèm theo lượng calo ước tính trung bình (trên 100g)
+CATEGORY_MAPPING = {
+    "🥩 Thịt (Meat/Beef/Pork/Chicken)": {
+        "keywords": ["meat", "beef", "pork", "chicken", "thit", "bo", "heo", "ga"],
+        "color": "#ff4b4b",
+        "avg_calo": 250
+    },
+    "🐟 Cá & Hải sản (Fish/Seafood)": {
+        "keywords": ["fish", "seafood", "shrimp", "crab", "ca", "tom", "cua", "muc"],
+        "color": "#1c83e1",
+        "avg_calo": 130
+    },
+    "🥦 Rau củ (Vegetables)": {
+        "keywords": ["vegetable", "veg", "cabbage", "carrot", "rau", "cu", "cai", "ca_rot", "broccoli"],
+        "color": "#28a745",
+        "avg_calo": 40
+    },
+    "🍎 Hoa quả (Fruits)": {
+        "keywords": ["fruit", "apple", "banana", "orange", "hoa_qua", "trai_cay", "tao", "chuoi", "xoai"],
+        "color": "#ffc107",
+        "avg_calo": 60
+    },
+    "🥚 Trứng (Eggs)": {
+        "keywords": ["egg", "trung"],
+        "color": "#fd7e14",
+        "avg_calo": 155
+    }
+}
+
+def categorize_item(class_name):
+    class_lower = class_name.lower()
+    for cat_name, info in CATEGORY_MAPPING.items():
+        if any(kw in class_lower for kw in info["keywords"]):
+            return cat_name, info["color"], info["avg_calo"]
+    return "📌 Nguyên liệu khác", "#6c757d", 100
+
+# Khu vực chính tải ảnh
+uploaded_file = st.file_uploader("📂 Tải lên hình ảnh nguyên liệu hoặc món ăn (JPG, PNG)...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
+    col1, col2 = st.columns(2)
+    
     image = Image.open(uploaded_file)
-    st.image(image, caption="Ảnh nguyên liệu đã chọn", use_container_width=True)
+    with col1:
+        st.subheader("🖼️ Ảnh gốc")
+        st.image(image, use_container_width=True)
     
-    st.divider()
-    
-    if st.button("🚀 Phân Tích Thực Phẩm & Tối Ưu Giá", type="primary"):
-        with st.spinner("AI đang quét nguyên liệu và tra cứu giá siêu thị..."):
-            detected_item = "Không xác định"
-            estimated_calo = 0
+    # Nút thực thi
+    if st.button("🚀 Quét và Phân Loại Nguyên Liệu", type="primary"):
+        with st.spinner("AI đang phân tích từng chi tiết nguyên liệu..."):
+            # Chạy model với ngưỡng tin cậy tùy chỉnh từ sidebar
+            results = model(image, conf=confidence_threshold)
+            res = results[0]
             
-            # Ưu tiên nhận diện bằng YOLO nếu có file best.pt
-            if model is not None:
-                try:
-                    results = model(image)
-                    names = model.names
-                    boxes = results[0].boxes
-                    if len(boxes) > 0:
-                        cls_id = int(boxes[0].cls[0])
-                        detected_item = names[cls_id]
-                        estimated_calo = 180 
-                    else:
-                        detected_item = "Không nhận diện rõ nguyên liệu"
-                except Exception:
-                    detected_item = "Lỗi xử lý mô hình AI"
-            else:
-                # Cơ sở dữ liệu mẫu đa dạng khi chạy mô phỏng để test nhiều món khác nhau
-                sample_foods = [
-                    {"name": "Thịt heo (Ba chỉ)", "calo": 242, "bhx": "115.000 đ", "winmart": "128.000 đ", "coop": "120.000 đ"},
-                    {"name": "Rau muống tươi", "calo": 19, "bhx": "12.000 đ", "winmart": "15.000 đ", "coop": "14.000 đ"},
-                    {"name": "Ức gà phi lê", "calo": 165, "bhx": "78.000 đ", "winmart": "85.000 đ", "coop": "82.000 đ"},
-                    {"name": "Cà chua tươi", "calo": 18, "bhx": "22.000 đ", "winmart": "25.000 đ", "coop": "24.000 đ"},
-                    {"name": "Trứng gà ta (1 quả)", "calo": 72, "bhx": "35.000 đ/chục", "winmart": "38.000 đ/chục", "coop": "36.000 đ/chục"}
-                ]
-                # Chọn ngẫu nhiên hoặc giả lập thông minh
-                chosen = random.choice(sample_foods)
-                detected_item = f"{chosen['name']} [Chế độ mô phỏng]"
-                estimated_calo = chosen['calo']
+            # Vẽ khung kết quả lên ảnh
+            res_plotted = res.plot()
+            res_plotted_rgb = Image.fromarray(res_plotted[..., ::-1])
+            
+            with col2:
+                st.subheader("🎯 Kết quả nhận diện")
+                st.image(res_plotted_rgb, use_container_width=True)
+            
+            boxes = res.boxes
+            if len(boxes) > 0:
+                st.markdown("---")
+                st.subheader("📊 Bảng Thống Kê & Phân Nhóm Nguyên Liệu")
                 
-                supermarket_prices = {
-                    "Bách Hóa Xanh": f"{chosen['bhx']} / kg",
-                    "VinMart (WinMart)": f"{chosen['winmart']} / kg",
-                    "Co.opmart": f"{chosen['coop']} / kg"
-                }
+                # Gom nhóm dữ liệu
+                grouped_data = {}
+                total_estimated_calo = 0
+                
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    class_name = model.names[cls_id]
+                    confidence = float(box.conf[0]) * 100
+                    
+                    category, color, calo = categorize_item(class_name)
+                    
+                    if category not in grouped_data:
+                        grouped_data[category] = []
+                    grouped_data[category].append((class_name, confidence, calo))
+                    total_estimated_calo += calo
 
-            if model is not None:
-                supermarket_prices = {
-                    "Bách Hóa Xanh": "115.000 đ / kg",
-                    "VinMart (WinMart)": "128.000 đ / kg",
-                    "Co.opmart": "120.000 đ / kg"
-                }
-
-        st.success("✅ Phân tích thành công!")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric(label="Nguyên liệu nhận diện", value=detected_item)
-        with col2:
-            st.metric(label="Calo ước tính", value=f"{estimated_calo} kcal / 100g")
-            
-        st.subheader("🛒 So sánh giá siêu thị thời gian thực:")
-        for market, price in supermarket_prices.items():
-            st.write(f"- **{market}**: {price}")
-            
-        st.info("💡 **Gợi ý tối ưu:** Hệ thống đã tự động lọc mức giá tốt nhất tại Bách Hóa Xanh cho nguyên liệu này hôm nay.")
-
+                # Hiển thị kết quả chia theo từng tab hoặc từng card nhóm màu sắc
+                cols = st.columns(len(grouped_data))
+                idx = 0
+                
+                for category, items in grouped_data.items():
+                    with st.container():
+                        st.markdown(f"### {category}")
+                        for name, conf, calo in items:
+                            st.markdown(
+                                f"""
+                                <div style="padding: 10px; border-radius: 5px; background-color: #f8f9fa; border-left: 5px solid #ff4b4b; margin-bottom: 8px;">
+                                    <b>{name.upper()}</b><br>
+                                    🔹 Độ tin cậy: <code>{conf:.1f}%</code><br>
+                                    🔥 Calo ước tính: <code>~{calo} kcal</code>
+                                </div>
+                                """, 
+                                unsafe_allow_html=True
+                            )
+                
+                # Tổng hợp dinh dưỡng nhanh
+                st.markdown("---")
+                m1, m2 = st.columns(2)
+                m1.metric(label="Tổng số nguyên liệu phát hiện", value=f"{len(boxes)} món")
+                m2.metric(label="Tổng năng lượng ước tính (Mẫu chuẩn)", value=f"~{total_estimated_calo} kcal")
+                
+                st.info("💡 **Mẹo khắc phục lỗi nhận diện nhầm (Cá thành Thịt bò):** Nếu bạn thấy nhãn bị gán sai nhóm, hãy kiểm tra lại tập dữ liệu (dataset) lúc train hoặc tăng thanh trượt **Độ tự tin** ở thanh menu bên trái lên mức `0.6` hoặc `0.7` để lọc bớt các kết quả nhiễu.")
+            else:
+                st.warning("⚠️ Không tìm thấy nguyên liệu nào đạt độ tin cậy theo cấu hình hiện tại. Hãy thử hạ thấp độ tự tin ở sidebar hoặc chụp ảnh rõ nét hơn!")
 else:
-    st.info("💡 **Hướng dẫn:** Hãy tải lên hoặc chụp ảnh nguyên liệu bất kỳ để bắt đầu quét và so sánh giá.")
+    st.info("👆 Vui lòng tải một hình ảnh thực phẩm lên để bắt đầu hệ thống phân loại tự động.")
