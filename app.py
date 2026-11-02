@@ -43,13 +43,14 @@ with st.sidebar:
     cond_gout = st.checkbox("Bệnh Gout (Tăng Acid Uric)")
     cond_lipid = st.checkbox("Rối loạn mỡ máu / Tim mạch")
 
-# --- HÀM GỌI GEMINI API NHẬN DIỆN ẢNH THỰC TẾ ---
+# --- HÀM GỌI GEMINI API NHẬN DIỆN ẢNH THỰC TẾ (Sửa dùng gemini-1.5-flash) ---
 def scan_food_with_gemini(image_pil: Image.Image, key: str) -> dict:
     buffered = io.BytesIO()
     image_pil.convert("RGB").save(buffered, format="JPEG", quality=85)
     img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key.strip()}"
+    # Đã sửa lại đúng tên mô hình chính thức gemini-1.5-flash
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key.strip()}"
     
     prompt = """
     Quan sát bức ảnh này và trả về kết quả đúng định dạng JSON thuần túy (không dùng markdown):
